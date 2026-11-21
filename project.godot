@@ -1,0 +1,36 @@
+; Engine configuration file.
+; Riket – sanntidsstrategi i Age of Empires-stil for Android
+
+config_version=5
+
+[application]
+
+config/name="Riket"
+config/description="Sanntidsstrategi i Age of Empires-stil"
+run/main_scene="res://main.tscn"
+config/features=PackedStringArray("4.3", "GL Compatibility")
+config/icon="res://icon.svg"
+config/quit_on_go_back=false
+
+[display]
+
+window/size/viewport_width=1280
+window/size/viewport_height=720
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+window/handheld/orientation=4
+
+[gui]
+
+theme/custom_font="res://fonts/SairaCondensed-SemiBold.ttf"
+
+[input_devices]
+
+pointing/emulate_mouse_from_touch=true
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+textures/vram_compression/import_etc2_astc=true
+environment/defaults/default_clear_color=Color(0.1, 0.14, 0.08, 1)
