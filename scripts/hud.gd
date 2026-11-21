@@ -2,17 +2,45 @@ class_name Hud
 extends CanvasLayer
 ## Ressurslinje øverst og panel nederst for det som er valgt. Store knapper for fingre.
 
+## Lite ikon for hver ressurs, tegnet i kode
+class ResIcon extends Control:
+	var kind := "wood"
+
+	func _init(k: String) -> void:
+		kind = k
+		custom_minimum_size = Vector2(30, 30)
+		mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	func _draw() -> void:
+		var c := size * 0.5
+		match kind:
+			"wood":
+				draw_rect(Rect2(c + Vector2(-11, -2), Vector2(22, 8)), Color(0.55, 0.36, 0.18))
+				draw_rect(Rect2(c + Vector2(-9, -9), Vector2(22, 8)), Color(0.65, 0.44, 0.22))
+				draw_circle(c + Vector2(-9, -5), 4.0, Color(0.85, 0.7, 0.45))
+			"food":
+				for p in [Vector2(-5, 2), Vector2(5, 2), Vector2(0, -5)]:
+					draw_circle(c + p, 6.0, Color(0.85, 0.15, 0.25))
+				draw_circle(c + Vector2(-2, -7), 1.8, Color(1, 0.7, 0.75))
+			"gold":
+				draw_colored_polygon(PackedVector2Array([c + Vector2(-12, 6), c + Vector2(-6, -8), c + Vector2(6, -8), c + Vector2(12, 6)]), Color(1.0, 0.82, 0.2))
+				draw_line(c + Vector2(-5, -5), c + Vector2(3, -5), Color(1, 1, 0.8), 2.0)
+			"stone":
+				draw_colored_polygon(PackedVector2Array([c + Vector2(-12, 7), c + Vector2(-9, -6), c + Vector2(2, -10), c + Vector2(12, -2), c + Vector2(10, 8)]), Color(0.72, 0.72, 0.70))
+				draw_line(c + Vector2(-4, -4), c + Vector2(4, 2), Color(0.5, 0.5, 0.5), 1.5)
+
+
 var main: Node
 
 var top: PanelContainer
-var wood_label: Label
+var res_labels := {}
 var pop_label: Label
 var idle_btn: Button
 
 var bottom: PanelContainer
 var info: Label
 var train_btn: Button
-var gather_btn: Button
+var gather_btns := {}
 var clear_btn: Button
 
 var hint: Label
@@ -57,9 +85,16 @@ func _ready() -> void:
 	var hb := HBoxContainer.new()
 	hb.add_theme_constant_override("separation", 30)
 	top.add_child(hb)
-	wood_label = _label(30)
+	for k: String in main.RES_ORDER:
+		var box := HBoxContainer.new()
+		box.add_theme_constant_override("separation", 6)
+		box.add_child(ResIcon.new(k))
+		var l := _label(30)
+		l.custom_minimum_size = Vector2(70, 0)
+		box.add_child(l)
+		res_labels[k] = l
+		hb.add_child(box)
 	pop_label = _label(30)
-	hb.add_child(wood_label)
 	hb.add_child(pop_label)
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -84,14 +119,20 @@ func _ready() -> void:
 	bh.add_child(info)
 	train_btn = _button("", func() -> void: main.train_worker())
 	train_btn.custom_minimum_size = Vector2(280, 72)
-	gather_btn = _button("Hogg tre", func() -> void: main.auto_gather_selected())
-	clear_btn = _button("Fjern valg", func() -> void: main.clear_selection())
 	bh.add_child(train_btn)
-	bh.add_child(gather_btn)
+	# Én knapp per ressurs: de valgte arbeiderne går til nærmeste av den typen
+	for k: String in main.RES_ORDER:
+		var b := _button(main.RES_NAMES[k], func() -> void: main.auto_gather_selected(k))
+		b.custom_minimum_size = Vector2(118, 72)
+		b.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		gather_btns[k] = b
+		bh.add_child(b)
+	clear_btn = _button("Fjern valg", func() -> void: main.clear_selection())
+	clear_btn.custom_minimum_size = Vector2(150, 72)
 	bh.add_child(clear_btn)
 
 	hint = _label(24)
-	hint.text = "Trykk på en arbeider og så på et tre.  Dra for å flytte kartet, knip for å zoome.\nHold fingeren stille og dra for å velge flere.  Dobbelttrykk på en arbeider velger alle på skjermen."
+	hint.text = "Trykk på en arbeider og så på et tre, en bærbusk eller en gruve.  Dra for å flytte kartet, knip for å zoome.\nHold fingeren stille og dra for å velge flere.  Dobbelttrykk på en arbeider velger alle på skjermen."
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	hint.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
 	hint.grow_horizontal = Control.GROW_DIRECTION_BOTH
@@ -120,7 +161,8 @@ func _process(delta: float) -> void:
 	hint.modulate.a = clampf(_hint_time, 0.0, 1.0)
 	hint.visible = _hint_time > 0.0 and not bottom.visible
 
-	wood_label.text = "Tre: %d" % main.wood
+	for k: String in res_labels:
+		res_labels[k].text = str(main.res[k])
 	pop_label.text = "Folk: %d/%d" % [main.workers.size(), main.POP_CAP]
 	var idle: int = main.idle_workers().size()
 	idle_btn.text = "Ledige: %d" % idle
@@ -128,26 +170,37 @@ func _process(delta: float) -> void:
 
 	var sel: Array = main.selected
 	var town: TownCenter = main.town
+	var map: GameMap = main.map
+	var sres: Vector2i = main.selected_res
 	if not sel.is_empty():
-		bottom.visible = true
-		train_btn.visible = false
-		gather_btn.visible = true
-		var carrying := 0
-		for w: Worker in sel:
-			carrying += w.carry
+		_show(false, true)
 		if sel.size() == 1:
-			info.text = "Arbeider\nBærer %d/%d tre" % [carrying, Worker.CAPACITY]
+			var w: Worker = sel[0]
+			var what := "Ledig"
+			if not w.is_idle() and w.state != Worker.S.MOVE:
+				what = "Samler " + main.RES_NAMES[w.kind].to_lower()
+			info.text = "Arbeider – %s\nBærer %d/%d %s" % [what, w.carry, Worker.CAPACITY, main.RES_NAMES.get(w.carry_kind, "").to_lower()]
 		else:
-			info.text = "%d arbeidere valgt\nBærer %d tre" % [sel.size(), carrying]
+			var counts := {}
+			for w: Worker in sel:
+				if not w.is_idle() and w.state != Worker.S.MOVE:
+					counts[w.kind] = counts.get(w.kind, 0) + 1
+			var parts: PackedStringArray = []
+			for k: String in main.RES_ORDER:
+				if counts.has(k):
+					parts.append("%d %s" % [counts[k], main.RES_NAMES[k].to_lower()])
+			info.text = "%d arbeidere valgt\n%s" % [sel.size(), ", ".join(parts) if not parts.is_empty() else "Ledige"]
+	elif map.is_resource(sres):
+		_show(false, false)
+		var t := map.tile_at(sres)
+		info.text = "%s\n%d %s igjen" % [GameMap.NAMES[t], map.amount_at(sres), main.RES_NAMES[map.kind_at(sres)].to_lower()]
 	elif town.selected:
-		bottom.visible = true
-		train_btn.visible = true
-		gather_btn.visible = false
+		_show(true, false)
 		var q := ""
 		if town.queue > 0:
 			q = "\nTrener: %d  (%d %%)" % [town.queue, int(town.progress * 100)]
 		info.text = "Rådhus" + q
-		train_btn.text = "Tren arbeider\n(%d tre)" % main.WORKER_COST
+		train_btn.text = "Tren arbeider\n(%d mat)" % main.WORKER_COST
 		train_btn.disabled = not main.can_train()
 	else:
 		bottom.visible = false
@@ -155,3 +208,10 @@ func _process(delta: float) -> void:
 	bottom.reset_size()
 	bottom.position.x = (bottom.get_viewport_rect().size.x - bottom.size.x) * 0.5
 	bottom.position.y = bottom.get_viewport_rect().size.y - bottom.size.y - 8
+
+
+func _show(train: bool, gather: bool) -> void:
+	bottom.visible = true
+	train_btn.visible = train
+	for b: Button in gather_btns.values():
+		b.visible = gather

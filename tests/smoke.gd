@@ -6,6 +6,8 @@ extends Node
 ##  4. rådhuset trener en ny arbeider, og den går selv og hogger
 ##  5. en arbeider finner fram til et fjernt punkt rundt hindringer
 ##  6. når et tre er hogd ned, finner arbeideren et nytt tre selv
+##  7. mat (bær), gull og stein ligger nær basen, kan samles og kommer inn i telleren
+##  8. bytter arbeideren ressurstype, mister den lasten den bar
 
 const SPEED := 8.0
 
@@ -70,7 +72,7 @@ func _run() -> void:
 		return
 	w = main.selected[0]
 	main.tap_world(map.center_of(start.target))
-	if w.state != Worker.S.TO_TREE and w.state != Worker.S.CHOP:
+	if w.state != Worker.S.TO_RES and w.state != Worker.S.GATHER:
 		_fail("arbeideren gikk ikke til treet (tilstand %d)" % w.state)
 		return
 	print("2 ok: trykk velger og gir ordre")
@@ -80,20 +82,20 @@ func _run() -> void:
 	for o: Worker in main.workers:
 		if o != w:
 			o.cmd_auto_gather()
-	var wood0: int = main.wood
-	var ok := await _wait_until(func() -> bool: return main.wood >= wood0 + 30, 60.0)
+	var wood0: int = main.res.wood
+	var ok := await _wait_until(func() -> bool: return main.res.wood >= wood0 + 30, 60.0)
 	if not ok:
-		_fail("veden kom ikke hjem (tre: %d)" % main.wood)
+		_fail("veden kom ikke hjem (tre: %d)" % main.res.wood)
 		return
-	print("3 ok: tre = ", main.wood)
+	print("3 ok: tre = ", main.res.wood)
 
 	# 4
-	main.wood = 200
+	main.res.food = 200
 	main.select_town()
 	if not main.train_worker() or not main.train_worker():
 		_fail("kunne ikke trene arbeider")
 		return
-	if main.wood != 100:
+	if main.res.food != 100:
 		_fail("trening trakk ikke riktig pris")
 		return
 	ok = await _wait_until(func() -> bool: return main.workers.size() == main.START_WORKERS + 2, 30.0)
@@ -134,14 +136,55 @@ func _run() -> void:
 	# 6
 	var cw: Worker = main.workers[2]
 	cw.cmd_auto_gather()
-	await _wait_until(func() -> bool: return cw.state == Worker.S.CHOP, 30.0)
-	var first := cw.tree
-	map.wood[first.y * GameMap.W + first.x] = 1
-	ok = await _wait_until(func() -> bool: return cw.tree != first and not cw.is_idle(), 20.0)
+	await _wait_until(func() -> bool: return cw.state == Worker.S.GATHER, 30.0)
+	var first := cw.target
+	map.amount[first.y * GameMap.W + first.x] = 1
+	ok = await _wait_until(func() -> bool: return cw.target != first and not cw.is_idle(), 20.0)
 	if not ok or map.is_tree(first):
 		_fail("arbeideren fant ikke nytt tre")
 		return
-	print("6 ok: nytt tre ", cw.tree)
+	print("6 ok: nytt tre ", cw.target)
+
+	# 7
+	var tc := map.nearest_walkable(town.cell + Vector2i(1, 3))
+	var names := {"food": "bær", "gold": "gull", "stone": "stein"}
+	var gatherers: Array[Worker] = []
+	var i := 0
+	for k: String in ["food", "gold", "stone"]:
+		var near := map.nearest_adjacent(tc, func(c: Vector2i) -> bool: return map.kind_at(c) == k)
+		if near.is_empty() or Vector2(near.target).distance_to(Vector2(town.cell)) > 14.0:
+			_fail("fant ikke %s nær basen" % names[k])
+			return
+		var g: Worker = main.workers[i]
+		i += 1
+		main._set_selection([g] as Array[Worker])
+		main.command_at(map.center_of(near.target))
+		if g.kind != k or g.state != Worker.S.TO_RES:
+			_fail("arbeideren gikk ikke til %s" % names[k])
+			return
+		gatherers.append(g)
+	main.clear_selection()
+	var before: Dictionary = main.res.duplicate()
+	ok = await _wait_until(func() -> bool:
+		return main.res.food >= before.food + 10 and main.res.gold >= before.gold + 10 and main.res.stone >= before.stone + 10, 90.0)
+	if not ok:
+		_fail("mat/gull/stein kom ikke hjem: %s" % str(main.res))
+		return
+	print("7 ok: ", main.res)
+
+	# 8
+	var sw: Worker = gatherers[1]
+	await _wait_until(func() -> bool: return sw.carry > 2 and sw.state == Worker.S.GATHER, 30.0)
+	if sw.carry_kind != "gold":
+		_fail("gullarbeideren bærer %s" % sw.carry_kind)
+		return
+	sw.cmd_auto_gather("wood")
+	ok = await _wait_until(func() -> bool: return sw.state == Worker.S.GATHER, 30.0)
+	await _wait(1.0)
+	if not ok or sw.carry_kind != "wood" or sw.carry > 3:
+		_fail("bytte av ressurs ble feil (%s %d)" % [sw.carry_kind, sw.carry])
+		return
+	print("8 ok: byttet til tre")
 
 	print("SMOKE OK")
 	get_tree().quit(0)

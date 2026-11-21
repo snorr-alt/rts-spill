@@ -9,7 +9,10 @@ const WORKER_COST := 50
 const TRAIN_TIME := 10.0
 const POP_CAP := 10
 const START_WORKERS := 3
-const START_WOOD := 100
+## Startressurser som i Age of Empires
+const START := {"wood": 200, "food": 200, "gold": 100, "stone": 200}
+const RES_ORDER := ["wood", "food", "gold", "stone"]
+const RES_NAMES := {"wood": "Tre", "food": "Mat", "gold": "Gull", "stone": "Stein"}
 
 const TAP_SLOP := 14.0
 const LONG_PRESS := 0.4
@@ -25,7 +28,8 @@ var overlay: Node2D
 var cam: Camera2D
 var hud: Hud
 
-var wood := START_WOOD
+var res := START.duplicate()
+var selected_res := Vector2i(-1, -1)  # ressursrute som vises i panelet
 var workers: Array[Worker] = []
 var selected: Array[Worker] = []
 
@@ -76,18 +80,18 @@ func _ready() -> void:
 
 # ---------------------------------------------------------------- økonomi
 
-func add_wood(n: int) -> void:
-	wood += n
+func add_resource(kind: String, n: int) -> void:
+	res[kind] += n
 
 
 func can_train() -> bool:
-	return wood >= WORKER_COST and workers.size() + town.queue < POP_CAP and town.queue < TownCenter.MAX_QUEUE
+	return res.food >= WORKER_COST and workers.size() + town.queue < POP_CAP and town.queue < TownCenter.MAX_QUEUE
 
 
 func train_worker() -> bool:
 	if not can_train():
 		return false
-	wood -= WORKER_COST
+	res.food -= WORKER_COST
 	town.queue += 1
 	return true
 
@@ -113,7 +117,8 @@ func _process(delta: float) -> void:
 		if town.progress >= 1.0:
 			town.progress = 0.0
 			town.queue -= 1
-			_spawn_worker().cmd_auto_gather()
+			# Nye arbeidere samler det det er minst av (av tre og mat), så økonomien holdes i gang
+			_spawn_worker().cmd_auto_gather("food" if res.food <= res.wood else "wood")
 	else:
 		town.progress = 0.0
 	# Langt trykk uten bevegelse starter valgboks
@@ -146,6 +151,7 @@ func _set_selection(list: Array[Worker]) -> void:
 	for w in selected:
 		w.selected = true
 	town.selected = false
+	selected_res = Vector2i(-1, -1)
 
 
 func clear_selection() -> void:
@@ -166,9 +172,9 @@ func select_town() -> void:
 	town.selected = true
 
 
-func auto_gather_selected() -> void:
+func auto_gather_selected(kind: String) -> void:
 	for w in selected:
-		w.cmd_auto_gather()
+		w.cmd_auto_gather(kind)
 
 
 func _worker_at(world: Vector2) -> Worker:
@@ -210,6 +216,9 @@ func tap_world(world: Vector2) -> void:
 		command_at(world)
 	elif town.contains(world):
 		select_town()
+	elif map.is_resource(map.tile_of(world)):
+		clear_selection()
+		selected_res = map.tile_of(world)
 	else:
 		clear_selection()
 
@@ -222,10 +231,10 @@ func command_at(world: Vector2) -> void:
 		for w in selected:
 			w.cmd_return()
 		_markers.append([town.center(), 0.0, Color(1.0, 0.9, 0.3)])
-	elif map.is_tree(c):
+	elif map.is_resource(c):
 		for w in selected:
 			w.cmd_gather(c)
-		_markers.append([map.center_of(c), 0.0, Color(1.0, 0.6, 0.2)])
+		_markers.append([map.center_of(c), 0.0, Worker.CARRY_COLOR[map.kind_at(c)]])
 	else:
 		# Spre de valgte litt, så de ikke står oppå hverandre
 		var n := selected.size()
@@ -369,6 +378,10 @@ func _draw_overlay() -> void:
 		var col: Color = m[2]
 		col.a = 1.0 - t
 		overlay.draw_arc(m[0], 6.0 + 14.0 * t, 0.0, TAU, 24, col, 3.0)
+	if map.is_resource(selected_res):
+		overlay.draw_arc(map.center_of(selected_res), 18.0, 0.0, TAU, 28, Color(1, 1, 1, 0.8), 2.0)
+	elif selected_res.x >= 0:
+		selected_res = Vector2i(-1, -1)
 	if _mode == "box":
 		var r := Rect2(_to_world(_box_a), Vector2.ZERO).expand(_to_world(_box_b))
 		overlay.draw_rect(r, Color(0.4, 1.0, 0.4, 0.15))
