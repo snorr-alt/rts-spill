@@ -108,6 +108,7 @@ var main: Main
 var top: PanelContainer
 var res_labels := {}
 var pop_label: Label
+var age_label: Label
 var idle_btn: Button
 var army_btn: Button
 var minimap: Minimap
@@ -183,6 +184,8 @@ func _ready() -> void:
 	pop_label = _label(28)
 	pbox.add_child(pop_label)
 	hb.add_child(pbox)
+	age_label = _label(24)
+	hb.add_child(age_label)
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hb.add_child(spacer)
@@ -219,7 +222,7 @@ func _ready() -> void:
 		bh.add_child(b)
 
 	hint = _label(24)
-	hint.text = "Trykk på en arbeider og så på et tre, en bærbusk eller en gruve.  Dra for å flytte kartet, knip for å zoome.\nHold fingeren stille og dra for å velge flere.  Bygg hus for mer folk og brakker for soldater."
+	hint.text = "Trykk på en arbeider og så på et tre, en bærbusk eller en gruve.  Dra for å flytte kartet, knip for å zoome.\nBygg hus for mer folk, sagbruk og gruveleir nær ressursene, og gå opp i føydaltid i rådhuset."
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_center_bottom(hint, -20)
 	hint.add_theme_color_override("font_outline_color", Color.BLACK)
@@ -420,6 +423,7 @@ func _process(delta: float) -> void:
 	for k: String in res_labels:
 		res_labels[k].text = str(me.res[k])
 	pop_label.text = "%d/%d" % [me.pop(), me.pop_cap()]
+	age_label.text = Defs.AGES[me.age]
 	pop_label.add_theme_color_override("font_color", Color(1, 0.5, 0.4) if me.pop() >= me.pop_cap() else Color(1.0, 0.92, 0.75))
 	var idle := main.idle_workers().size()
 	idle_btn.text = "Ledige: %d" % idle
@@ -435,7 +439,11 @@ func _process(delta: float) -> void:
 	if bottom.visible:
 		bottom.reset_size()
 		var vs := bottom.get_viewport_rect().size
-		bottom.position = Vector2((vs.x - bottom.size.x) * 0.5, vs.y - bottom.size.y - 8)
+		# Smale skjermer: krymp panelet så alle knappene får plass
+		var k := minf(1.0, (vs.x - 16.0) / bottom.size.x)
+		bottom.scale = Vector2(k, k)
+		var w := bottom.size * k
+		bottom.position = Vector2((vs.x - w.x) * 0.5, vs.y - w.y - 8)
 
 
 func _update_bottom() -> void:
@@ -451,11 +459,15 @@ func _update_bottom() -> void:
 	if not sel.is_empty():
 		var workers: Array[Unit] = main.selected_workers()
 		if not workers.is_empty() and main.build_menu:
-			info.text = "Bygg\n%d arbeider%s" % [workers.size(), "e" if workers.size() > 1 else ""]
+			var mil: bool = main.build_page == 1
+			info.text = "Bygg – %s\n%d arbeider%s" % ["militært" if mil else "økonomi", workers.size(), "e" if workers.size() > 1 else ""]
 			var list: Array = []
-			for t: String in Defs.BUILDABLE:
+			for t: String in (Defs.BUILD_MIL if mil else Defs.BUILD_ECO):
 				var d: Dictionary = Defs.BUILDINGS[t]
-				list.append(["%s\n%s" % [d.name, Defs.cost_text(d.cost)], main.start_placing.bind(t), me.can_afford(d.cost)])
+				var why := me.build_block_reason(t)
+				var line := Defs.cost_text(d.cost) if why == "" else why
+				list.append(["%s\n%s" % [d.name, line], main.start_placing.bind(t), why == "" and me.can_afford(d.cost)])
+			list.append(["Økonomi" if mil else "Militært", main.open_build_menu.bind(true, 0 if mil else 1), true])
 			list.append(["Tilbake", main.open_build_menu.bind(false), true])
 			_set_buttons(list)
 			return
@@ -481,15 +493,38 @@ func _update_bottom() -> void:
 			info.text = "%s\nUnder bygging: %d %%" % [b.display_name(), int(b.progress * 100)]
 			_set_buttons([["Fjern valg", main.clear_selection, true]])
 			return
+		if b.type == "farm":
+			text = "Gård\n%d mat igjen – %s" % [b.food, "dyrkes" if b.farmer != null and is_instance_valid(b.farmer) else "ledig"]
+		elif not b.def.get("drop", []).is_empty() and b.type != "town":
+			var names: PackedStringArray = []
+			for k: String in b.def.drop:
+				names.append(Defs.RES_NAMES[k].to_lower())
+			text += "\nLeveringsplass for " + " og ".join(names)
+		elif b.type == "tower":
+			text += "\nSkyter fiender innen %d ruter" % int(b.def.range)
 		if not b.queue.is_empty():
-			text += "\nTrener %s (%d %%), %d i kø" % [Defs.UNITS[b.queue[0]].name.to_lower(), int(b.train_progress() * 100), b.queue.size()]
-		if me.pop_with_queue() >= me.pop_cap() and me.pop_cap() < Defs.POP_MAX:
+			var first := Defs.item(b.queue[0])
+			var verb := "Forsker" if Defs.is_tech(b.queue[0]) else "Trener"
+			text += "\n%s %s (%d %%), %d i kø" % [verb, first.name.to_lower(), int(b.train_progress() * 100), b.queue.size()]
+		elif b.trains_anything():
+			text += "\nTrykk på kartet for samlingspunkt" if b.rally == Vector2.INF else "\nSamlingspunkt satt (trykk bygningen for å fjerne)"
+		if b.trains_anything() and me.pop_with_queue() >= me.pop_cap() and me.pop_cap() < Defs.POP_MAX:
 			text += "\nFolketallet er fullt – bygg hus!"
+		if "feudal" in b.def.trains and me.age == 0 and not me.researching("feudal"):
+			var why := me.feudal_block_reason()
+			if why != "":
+				text += "\nFøydaltid: " + why.to_lower()
 		info.text = text
 		var list: Array = []
 		for u: String in b.def.trains:
-			var d: Dictionary = Defs.UNITS[u]
-			list.append(["%s\n%s" % [d.name, Defs.cost_text(d.cost)], b.train.bind(u), b.can_train(u)])
+			var d := Defs.item(u)
+			if Defs.is_tech(u) and (me.age >= d.gives_age or me.researching(u)):
+				continue
+			var why := b.train_block_reason(u)
+			var line := Defs.cost_text(d.cost)
+			if why == Defs.AGES[1]:
+				line = why
+			list.append(["%s\n%s" % [d.name, line], b.train.bind(u), why == ""])
 		if not b.queue.is_empty():
 			list.append(["Avbryt", b.cancel_last, true])
 		list.append(["Fjern valg", main.clear_selection, true])

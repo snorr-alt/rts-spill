@@ -1,8 +1,9 @@
 class_name Worker
 extends Unit
-## Landsbyarbeider. Kan samle tre, mat (bær), gull og stein, bære det til rådhuset,
-## bygge og angripe. Bærer bare én ressurstype om gangen. Når en ressurs er tom,
-## finner den selv nærmeste av samme type.
+## Landsbyarbeider. Kan samle tre, mat (bær og gårder), gull og stein, bære det til nærmeste
+## leveringsplass (rådhus, sagbruk, gruveleir, mølle), bygge og angripe. Bærer bare én
+## ressurstype om gangen. Når en ressurs er tom, finner den selv nærmeste av samme type.
+## Mat hentes helst fra en ledig gård i nærheten, ellers fra bærbusker.
 
 const CAPACITY := 10
 ## Sekunder per enhet for hver ressurstype
@@ -16,6 +17,7 @@ var target := Vector2i(-1, -1)  # ressursruta arbeideren jobber på
 var kind := ""  # hva arbeideren samler (eller sist samlet)
 var carry := 0
 var carry_kind := ""
+var farm: Building = null  # gården arbeideren jobber på
 var _gather_t := 0.0
 
 
@@ -29,6 +31,49 @@ func is_gathering() -> bool:
 
 func is_building() -> bool:
 	return state in [S.TO_BUILD, S.BUILD]
+
+
+## Slipp gården når arbeideren får en annen ordre
+func _clear_targets() -> void:
+	super._clear_targets()
+	_release_farm()
+
+
+func _release_farm() -> void:
+	if farm != null and is_instance_valid(farm) and farm.farmer == self:
+		farm.farmer = null
+	farm = null
+
+
+func _farm_ok() -> bool:
+	return farm != null and is_instance_valid(farm) and not farm.dead and farm.complete and farm.food > 0 \
+		and (farm.farmer == null or farm.farmer == self)
+
+
+func cmd_farm(b: Building) -> void:
+	_clear_targets()
+	attack_move = false
+	kind = "food"
+	farm = b
+	_go_to_farm()
+
+
+func _go_to_farm() -> void:
+	if not _farm_ok():
+		farm = null
+		_find_resource()
+		return
+	farm.farmer = self
+	if _set_path_to_cell(map.tile_of(farm.center())):
+		state = S.TO_RES
+	else:
+		_release_farm()
+		state = S.IDLE
+
+
+func die() -> void:
+	_release_farm()
+	super.die()
 
 
 func cmd_gather(res_cell: Vector2i) -> void:
@@ -58,7 +103,7 @@ func cmd_return() -> void:
 	if carry > 0:
 		_go_town()
 	else:
-		var t := _town()
+		var t := _dropsite("food")
 		if t != null:
 			cmd_move(t.center() + Vector2(0, GameMap.TILE * 2.2))
 
@@ -78,11 +123,12 @@ func cmd_build(b: Building) -> void:
 		state = S.IDLE
 
 
-func _town() -> Building:
+## Nærmeste bygning som tar imot ressursen
+func _dropsite(what: String) -> Building:
 	var best: Building = null
 	var best_d := INF
 	for b in player.buildings:
-		if b.type == "town" and b.complete and not b.dead:
+		if b.accepts(what):
 			var d := position.distance_squared_to(b.center())
 			if d < best_d:
 				best_d = d
@@ -95,10 +141,15 @@ func _near_building(b: Building) -> bool:
 
 
 func _target_ok() -> bool:
+	if farm != null:
+		return _farm_ok()
 	return kind != "" and map.kind_at(target) == kind
 
 
 func _go_to_target() -> void:
+	if farm != null:
+		_go_to_farm()
+		return
 	if not _set_path_to_rect(Rect2i(target, Vector2i.ONE)):
 		_find_resource()
 		return
@@ -109,6 +160,13 @@ const KIND_TILE := {"wood": GameMap.T.TREE, "food": GameMap.T.BERRY, "gold": Gam
 
 
 func _find_resource() -> void:
+	if kind == "food":
+		var f := _free_farm()
+		if f != null:
+			farm = f
+			_go_to_farm()
+			return
+	farm = null
 	var r := map.nearest_adjacent_tile(_start_cell(), KIND_TILE[kind])
 	if r.is_empty() or not _set_path_to_cell(r.goal):
 		if carry > 0:
@@ -120,8 +178,21 @@ func _find_resource() -> void:
 	state = S.TO_RES
 
 
+## Nærmeste ledige, ferdige gård innen 14 ruter
+func _free_farm() -> Building:
+	var best: Building = null
+	var best_d := (14.0 * GameMap.TILE) ** 2
+	for b in player.buildings:
+		if b.type == "farm" and b.complete and not b.dead and b.food > 0 and (b.farmer == null or b.farmer == self):
+			var d := position.distance_squared_to(b.center())
+			if d < best_d:
+				best_d = d
+				best = b
+	return best
+
+
 func _go_town() -> void:
-	var t := _town()
+	var t := _dropsite(carry_kind if carry_kind != "" else kind)
 	if t == null or not _set_path_to_rect(t.rect()):
 		state = S.IDLE
 		return
@@ -138,7 +209,8 @@ func _worker_state(delta: float) -> void:
 	match state:
 		S.TO_RES:
 			if _follow(delta):
-				if _target_ok() and _adjacent_to(target):
+				var arrived := (_farm_ok() and farm.contains(position)) if farm != null else (_target_ok() and _adjacent_to(target))
+				if arrived:
 					# Bytter arbeideren ressurstype, mister den det den bar (som i Age of Empires)
 					if carry_kind != kind:
 						carry = 0
@@ -190,21 +262,27 @@ func _gather(delta: float) -> void:
 		else:
 			_go_town()
 		return
-	facing = (map.center_of(target) - position).normalized()
+	var spot := farm.center() + Vector2(sin(_anim * 0.7) * 14.0, 6.0) if farm != null else map.center_of(target)
+	facing = (spot - position).normalized() if spot.distance_to(position) > 1.0 else facing
 	_gather_t += delta * player.gather_mult
 	if _gather_t < RATE[kind]:
 		return
 	_gather_t = 0.0
-	carry += map.take(target)
+	carry += farm.take_food() if farm != null else map.take(target)
 	if carry >= CAPACITY:
 		_go_town()
 	elif not _target_ok():
 		_find_resource()
 
 
-## Når bygningen er ferdig: hjelp til med en annen byggeplass i nærheten, ellers samle igjen
+## Når bygningen er ferdig: en ny gård blir dyrket av den som bygde den. Ellers hjelp til
+## med en annen byggeplass i nærheten, eller samle igjen.
 func _after_build() -> void:
+	var built := target_building
 	target_building = null
+	if built != null and is_instance_valid(built) and built.type == "farm" and built.complete and built.farmer == null:
+		cmd_farm(built)
+		return
 	for b in player.buildings:
 		if not b.complete and not b.dead and b.distance_to(position) < GameMap.TILE * 8:
 			cmd_build(b)

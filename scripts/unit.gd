@@ -275,7 +275,7 @@ func _attack(delta: float) -> void:
 
 func _hit() -> void:
 	if target_unit != null:
-		var dmg := maxf(1.0, def.atk - target_unit.def.armor)
+		var dmg := Defs.damage(def, target_unit.def)
 		if def.range > 0.0:
 			main.add_arrow(position + Vector2(0, -6), target_unit.position + Vector2(0, -4))
 		target_unit.take_damage(dmg, self)
@@ -304,7 +304,7 @@ func _after_fight() -> void:
 			_scan_t = 0.0
 
 
-func take_damage(amount: float, from: Unit) -> void:
+func take_damage(amount: float, from: Node2D) -> void:
 	if dead:
 		return
 	hp -= amount
@@ -318,7 +318,10 @@ func take_damage(amount: float, from: Unit) -> void:
 	# Soldater som står i ro, slår tilbake
 	if from != null and is_instance_valid(from) and is_military() and state == S.IDLE:
 		_guard_pos = position
-		cmd_attack_unit(from)
+		if from is Unit:
+			cmd_attack_unit(from)
+		else:
+			cmd_attack_building(from)
 		_guarding = true
 
 
@@ -370,6 +373,47 @@ func _draw_body(o: Vector2) -> void:
 			draw_arc(o + Vector2(0, -8), 4.5, PI, TAU, 10, Color(0.25, 0.45, 0.2), 2.5)  # hette
 			var bc := o + dir * 7.0
 			draw_arc(bc, 7.0, dir.angle() - 1.2, dir.angle() + 1.2, 10, Color(0.5, 0.32, 0.15), 2.0)
+		"spear":
+			draw_circle(o, 6.5, col)
+			draw_circle(o + Vector2(0, -8), 4.2, Color(0.93, 0.78, 0.62))
+			draw_arc(o + Vector2(0, -9), 4.2, PI, TAU, 10, Color(0.55, 0.45, 0.3), 2.5)  # lærhette
+			var thrust := 4.0 if state == S.ATTACK and _cool > def.cooldown - 0.25 else 0.0
+			var base := o + dir.orthogonal() * 5.0 - dir * 6.0
+			var tip := base + dir * (22.0 + thrust)
+			draw_line(base, tip, Color(0.50, 0.34, 0.18), 2.0)
+			draw_colored_polygon(PackedVector2Array([tip + dir * 5.0, tip + dir.orthogonal() * 2.5, tip - dir.orthogonal() * 2.5]), Color(0.8, 0.8, 0.85))
+		"scout", "knight":
+			_draw_horse(o, dir, col)
 		_:
 			draw_circle(o, 6.0, col)
 			draw_circle(o + Vector2(0, -7), 4.0, Color(0.93, 0.78, 0.62))
+
+
+## Rytter: hest sett ovenfra-skrått, med rytteren oppå
+func _draw_horse(o: Vector2, dir: Vector2, col: Color) -> void:
+	var horse := Color(0.45, 0.30, 0.18) if type == "scout" else Color(0.85, 0.85, 0.85)
+	var side := 1.0 if dir.x >= 0.0 else -1.0
+	var gallop := sin(_anim * 16.0) * 2.0 if state in [S.MOVE, S.ATTACK] and not _path.is_empty() else 0.0
+	# Bein
+	for k in 4:
+		var x := -8.0 + k * 5.0
+		draw_line(o + Vector2(x * side, 2), o + Vector2(x * side + (gallop if k % 2 == 0 else -gallop), 9), horse.darkened(0.4), 2.0)
+	# Kropp og hode
+	draw_set_transform(o + Vector2(0, 1), 0.0, Vector2(1.0, 0.55))
+	draw_circle(Vector2.ZERO, 11.0, horse)
+	draw_set_transform(Vector2.ZERO)
+	draw_circle(o + Vector2(11 * side, -5), 4.0, horse)
+	draw_line(o + Vector2(-11 * side, -1), o + Vector2(-15 * side, 5), horse.darkened(0.3), 2.0)  # hale
+	if type == "knight":
+		draw_rect(Rect2(o + Vector2(-7, -3), Vector2(14, 5)), col)  # skabrak i lagfargen
+	# Rytter
+	draw_circle(o + Vector2(0, -7), 5.0, col)
+	draw_circle(o + Vector2(0, -14), 3.8, Color(0.93, 0.78, 0.62))
+	if type == "knight":
+		draw_arc(o + Vector2(0, -14), 4.0, PI, TAU, 10, Color(0.7, 0.7, 0.75), 3.0)
+		var swing := -1.0 if state == S.ATTACK and _cool > def.cooldown - 0.25 else 0.0
+		var hand := o + Vector2(5 * side, -8)
+		draw_line(hand, hand + dir.rotated(swing) * 13.0, Color(0.85, 0.85, 0.9), 2.5)
+	else:
+		var hand := o + Vector2(5 * side, -8)
+		draw_line(hand, hand + dir * 9.0, Color(0.55, 0.40, 0.25), 2.0)

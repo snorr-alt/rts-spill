@@ -2,10 +2,13 @@ class_name AIController
 extends Node
 ## Datamotstanderen. Tenker én gang i sekundet:
 ##  1. økonomi: setter ledige arbeidere på den ressursen det mangler mest folk på, trener arbeidere
-##  2. bygger hus før folketallet er fullt, og brakker når økonomien er i gang
-##  3. trener sverdmenn og bueskyttere på skift, men aldri flere enn neste bølge pluss en hjemmestyrke
-##  4. forsvarer basen når den blir angrepet (arbeiderne hjelper til hvis det ikke finnes soldater)
-##  5. angriper i bølger som blir større for hver gang
+##  2. bygger hus før folketallet er fullt, sagbruk/gruveleir/mølle ved ressursene, gårder når
+##     bærene tar slutt, og brakker når økonomien er i gang
+##  3. går opp i føydaltid og bygger skytebane, stall og tårn
+##  4. trener soldater som slår det motstanderen har (styrketrekanten), men aldri flere enn
+##     neste bølge pluss en hjemmestyrke
+##  5. forsvarer basen når den blir angrepet (arbeiderne hjelper til hvis det ikke finnes soldater)
+##  6. angriper i bølger som blir større for hver gang
 ## Vanskelighetsgraden styrer samlefart, når første angrep kommer, bølgestørrelse og antall arbeidere.
 
 const BASE_RADIUS := 14.0 * GameMap.TILE
@@ -22,7 +25,7 @@ var _think_t := 0.0
 var _threat_pos := Vector2.INF
 var _threat_t := -100.0
 var _rebalance_t := 0.0
-var _toggle := 0
+var _camp_t := 20.0
 
 
 func _init(m: Main, p: Player, d: Dictionary) -> void:
@@ -48,7 +51,7 @@ func _process(delta: float) -> void:
 	_attack()
 
 
-func on_attacked(_target: Node2D, from: Unit) -> void:
+func on_attacked(_target: Node2D, from: Node2D) -> void:
 	_threat_pos = from.position
 	_threat_t = main.game_time
 
@@ -56,9 +59,14 @@ func on_attacked(_target: Node2D, from: Unit) -> void:
 # ---------------------------------------------------------------- økonomi
 
 func _targets() -> Dictionary:
-	if player.count_buildings("barracks", true) == 0:
-		return {"food": 0.5, "wood": 0.4, "gold": 0.1, "stone": 0.0}
-	return {"food": 0.42, "wood": 0.28, "gold": 0.3, "stone": 0.0}
+	var t := {"food": 0.5, "wood": 0.42, "gold": 0.08, "stone": 0.0}
+	if player.count_buildings("barracks", true) > 0 or player.age >= 1:
+		t = {"food": 0.42, "wood": 0.28, "gold": 0.3, "stone": 0.0}
+	# Litt stein når den skal bygge tårn
+	if player.age >= 1 and player.count_buildings("tower") < diff.towers and player.res.stone < 150:
+		t.stone = 0.08
+		t.wood -= 0.08
+	return t
 
 
 func _economy() -> void:
@@ -95,8 +103,17 @@ func _economy() -> void:
 					w.cmd_auto_gather(need)
 					break
 	var town := player.town()
-	if town != null and town.queue.is_empty() and workers.size() < diff.workers:
+	if town != null and town.queue.is_empty() and workers.size() < diff.workers and not _saving_for_age():
 		town.train("worker")
+	# Føydaltid når økonomien er stor nok
+	if town != null and player.age == 0 and town.queue.is_empty() and workers.size() >= diff.feudal_workers:
+		town.train("feudal")
+
+
+## Sparer den mat til føydaltid? Da trener den verken arbeidere eller soldater som koster mat.
+func _saving_for_age() -> bool:
+	return player.age == 0 and not player.researching("feudal") \
+		and player.count_units("worker") >= diff.feudal_workers and player.res.food < 500
 
 
 func _most_needed(counts: Dictionary, targets: Dictionary, total: int) -> String:
@@ -129,16 +146,147 @@ func _build() -> void:
 		if player.can_afford(Defs.BUILDINGS.house.cost):
 			_place("house", 1)
 		return
-	if unfinished > 0:
-		return
 	var wcount := player.count_units("worker")
+	# Gårder kan bygges samtidig med andre ting
+	if _farm_needed() and player.can_afford(Defs.BUILDINGS.farm.cost) and _unfinished_of("farm") == 0:
+		_place_farm()
+	if unfinished - _unfinished_of("farm") > 0:
+		return
+	# Leveringsplasser ved ressursene
+	if wcount >= 5 and player.count_buildings("lumber") == 0 and player.can_afford(Defs.BUILDINGS.lumber.cost):
+		_place_near_resource("lumber", GameMap.T.TREE)
+		return
+	if wcount >= 7 and player.count_buildings("mill") == 0 and player.can_afford(Defs.BUILDINGS.mill.cost):
+		if not _place_near_resource("mill", GameMap.T.BERRY):
+			_place("mill", 1)
+		return
 	var barracks := player.count_buildings("barracks", true)
-	if barracks < diff.barracks and wcount >= 8 + barracks * 6 and player.can_afford(Defs.BUILDINGS.barracks.cost):
+	if barracks < diff.barracks and wcount >= 9 + barracks * 6 and player.can_afford(Defs.BUILDINGS.barracks.cost):
 		_place("barracks", 3)
+		return
+	if wcount >= 10 and player.count_buildings("mining") == 0 and player.can_afford(Defs.BUILDINGS.mining.cost):
+		_place_near_resource("mining", GameMap.T.GOLD)
+		return
+	# Nye leveringsplasser når ressursene har flyttet seg langt unna
+	_camp_t -= 1.0
+	if _camp_t <= 0.0:
+		_camp_t = 25.0
+		for pair in [["lumber", GameMap.T.TREE], ["mining", GameMap.T.GOLD]]:
+			if player.count_buildings(pair[0]) < 4 and player.can_afford(Defs.BUILDINGS[pair[0]].cost) and _resource_far(pair[0], pair[1]):
+				_place_near_resource(pair[0], pair[1])
+				return
+	if player.age < 1:
+		return
+	# Føydaltid: skytebane, stall og tårn
+	if player.count_buildings("range") == 0 and player.can_afford(Defs.BUILDINGS.range.cost):
+		_place("range", 2)
+		return
+	if diff.stable and player.count_buildings("stable") == 0 and player.can_afford(Defs.BUILDINGS.stable.cost):
+		_place("stable", 2)
+		return
+	if player.count_buildings("tower") < diff.towers and player.can_afford(Defs.BUILDINGS.tower.cost):
+		_place("tower", 2)
 		return
 	# Har den mye ubrukte ressurser, bygger den én brakke ekstra (ikke på lett)
 	if diff.name != "Lett" and barracks < diff.barracks + 1 and player.res.food > 500 and player.res.gold > 300 and player.res.wood > 300:
 		_place("barracks", 2)
+
+
+## Trengs det flere gårder? Når bærene nær basen er borte, skal matsankerne ha hver sin gård.
+func _farm_needed() -> bool:
+	if not player.has_complete("mill"):
+		return false
+	var targets := _targets()
+	var food_workers := int(round(targets.food * player.count_units("worker")))
+	var town := player.town()
+	if town == null:
+		return false
+	var berries := main.map.nearest_adjacent_tile(main.map.nearest_walkable(town.cell + Vector2i(1, 3)), GameMap.T.BERRY, 900)
+	var berry_room := 0 if berries.is_empty() else 5
+	return player.count_buildings("farm") < food_workers - berry_room
+
+
+func _place_farm() -> void:
+	var mill: Building = null
+	for b in player.buildings:
+		if b.type == "mill" and b.complete:
+			mill = b
+			break
+	var town := player.town()
+	# Gårdene legges rundt møllen eller rådhuset
+	for anchor: Building in [mill, town]:
+		if anchor == null:
+			continue
+		var best := Vector2i(-1, -1)
+		var best_d := INF
+		for y in range(anchor.cell.y - 3, anchor.cell.y + anchor.size + 2):
+			for x in range(anchor.cell.x - 3, anchor.cell.x + anchor.size + 2):
+				var c := Vector2i(x, y)
+				if main.map.can_place(c, 2):
+					var d := Vector2(c).distance_squared_to(Vector2(anchor.cell))
+					if d < best_d:
+						best_d = d
+						best = c
+		if best.x >= 0:
+			var builder := _pick_food_worker(main.map.center_of(best))
+			main.place_building(player, "farm", best, [builder] if builder != null else [])
+			return
+
+
+func _pick_food_worker(near: Vector2) -> Worker:
+	var best: Worker = null
+	var best_d := INF
+	for u in player.workers():
+		var w := u as Worker
+		if w.is_building() or (w.kind != "food" and best != null):
+			continue
+		var d := w.position.distance_squared_to(near) * (1.0 if w.kind == "food" else 4.0)
+		if d < best_d:
+			best_d = d
+			best = w
+	return best
+
+
+## Ligger nærmeste ressurs av denne typen langt fra leveringsplassene?
+func _resource_far(camp: String, tile: int) -> bool:
+	var nearest := INF
+	for b in player.buildings:
+		if b.type != camp:
+			continue
+		var r := main.map.nearest_adjacent_tile(main.map.nearest_walkable(b.cell + Vector2i(0, b.size)), tile, 1500)
+		if not r.is_empty():
+			nearest = minf(nearest, Vector2(r.target).distance_to(Vector2(b.cell)))
+	return nearest > 9.0
+
+
+## Plasser en leveringsplass like ved nærmeste ressurs av en type. Gir false hvis det ikke gikk.
+func _place_near_resource(type: String, tile: int) -> bool:
+	var town := player.town()
+	if town == null:
+		return false
+	var r := main.map.nearest_adjacent_tile(main.map.nearest_walkable(town.cell + Vector2i(1, 3)), tile)
+	if r.is_empty():
+		return false
+	var goal: Vector2i = r.goal
+	var size: int = Defs.BUILDINGS[type].size
+	var best := Vector2i(-1, -1)
+	var best_d := INF
+	for y in range(-4, 5):
+		for x in range(-4, 5):
+			var c := goal + Vector2i(x, y)
+			if not main.map.can_place(c, size):
+				continue
+			# Ikke helt inntil rådhuset, og la det være en vei rundt
+			if Vector2(c).distance_to(Vector2(town.cell)) < 5.0:
+				continue
+			var d := Vector2(c).distance_to(Vector2(r.target)) + randf()
+			if d < best_d:
+				best_d = d
+				best = c
+	if best.x < 0:
+		return false
+	var chosen := _pick_builders(1, main.map.center_of(best))
+	return main.place_building(player, type, best, chosen) != null
 
 
 func _unfinished_of(type: String) -> int:
@@ -166,9 +314,9 @@ func _place(type: String, builders: int) -> void:
 				if not main.map.can_place(c - Vector2i(1, 1), size + 2):
 					continue
 				var off := Vector2(x, y)
-				# Hus bak basen, brakker mot fienden
+				# Hus bak basen, militære bygninger og tårn mot fienden
 				var toward := off.normalized().dot(enemy_dir)
-				var score := off.length() + (toward * 3.0 if type == "house" else -toward * 3.0) + randf() * 2.0
+				var score := off.length() + (toward * 3.0 if type in ["house", "mill"] else -toward * 3.0) + randf() * 2.0
 				if score < best_score:
 					best_score = score
 					best = c
@@ -198,17 +346,52 @@ func _military() -> void:
 	# Ikke bygg opp en større hær enn neste bølge pluss en liten hjemmestyrke
 	var army := player.military().size()
 	for b in player.buildings:
-		army += b.queue.size() if b.type == "barracks" else 0
+		if b.type != "town":
+			army += b.queue.size()
 	if army >= wave_size + diff.extra:
 		return
+	if _saving_for_age():
+		return
+	var want := _unit_wants()
 	for b in player.buildings:
-		if b.type != "barracks" or not b.complete or b.queue.size() >= 2:
+		if not b.complete or not b.trains_anything() or b.type == "town" or b.queue.size() >= 2:
 			continue
-		var order := ["sword", "archer"] if _toggle % 2 == 0 else ["archer", "sword"]
-		for u: String in order:
-			if b.train(u):
-				_toggle += 1
-				break
+		# Velg det som gir best mottiltak av det denne bygningen kan trene
+		var best := ""
+		var best_w := -INF
+		for u: String in b.def.trains:
+			if Defs.is_tech(u) or not b.can_train(u):
+				continue
+			var w: float = want.get(u, 1.0) + randf() * 0.6
+			if w > best_w:
+				best_w = w
+				best = u
+		if best != "":
+			b.train(best)
+			army += 1
+			if army >= wave_size + diff.extra:
+				return
+
+
+## Hvor mye den vil ha av hver soldattype, ut fra hva motstanderen har (styrketrekanten)
+func _unit_wants() -> Dictionary:
+	var inf := 0
+	var arch := 0
+	var cav := 0
+	for p in main.players:
+		if p == player:
+			continue
+		inf += p.count_class("inf")
+		arch += p.count_class("arch")
+		cav += p.count_class("cav")
+	var total := maxf(1.0, inf + arch + cav)
+	return {
+		"sword": 1.0 + 1.5 * cav / total * 0.3 + 0.5 * inf / total,
+		"spear": 0.4 + 3.0 * cav / total,
+		"archer": 1.0 + 2.5 * inf / total,
+		"scout": 0.3 + 1.5 * arch / total,
+		"knight": 0.8 + 2.5 * arch / total,
+	}
 
 
 func _defend() -> void:

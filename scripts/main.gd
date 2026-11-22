@@ -40,6 +40,7 @@ var selected_building: Building = null
 var selected_enemy: Unit = null
 var selected_res := Vector2i(-1, -1)
 var build_menu := false
+var build_page := 0  # 0 = økonomi, 1 = militær
 var placing := ""  # bygningstype som plasseres, eller ""
 var place_cell := Vector2i.ZERO
 
@@ -133,7 +134,7 @@ func _add_building(p: Player, type: String, c: Vector2i, built: bool) -> Buildin
 ## Plasser en byggeplass og send arbeiderne dit. Gir bygningen, eller null hvis det ikke gikk.
 func place_building(p: Player, type: String, c: Vector2i, builders: Array) -> Building:
 	var def: Dictionary = Defs.BUILDINGS[type]
-	if not map.can_place(c, def.size) or not p.can_afford(def.cost):
+	if p.build_block_reason(type) != "" or not map.can_place(c, def.size) or not p.can_afford(def.cost):
 		return null
 	p.pay(def.cost)
 	var b := _add_building(p, type, c, false)
@@ -166,10 +167,50 @@ func spawn_unit(p: Player, type: String, from: Building) -> Unit:
 	units_root.add_child(u)
 	p.units.append(u)
 	p.stats.trained += 1
-	if type == "worker" and from.type == "town" and not p.is_ai:
+	p.stats.types[type] = p.stats.types.get(type, 0) + 1
+	if from.rally != Vector2.INF:
+		_go_to_rally(u, from.rally)
+	elif type == "worker" and from.type == "town" and not p.is_ai:
 		# Nye arbeidere samler det det er minst av (av mat og tre), så økonomien holdes i gang
 		(u as Worker).cmd_auto_gather("food" if p.res.food <= p.res.wood else "wood")
 	return u
+
+
+## Ny enhet går til samlingspunktet. Arbeidere begynner å jobbe hvis punktet er en ressurs eller gård.
+func _go_to_rally(u: Unit, at: Vector2) -> void:
+	if u is Worker:
+		var w := u as Worker
+		var c := map.tile_of(at)
+		if map.is_resource(c):
+			w.cmd_gather(c)
+			return
+		var b := building_at(at)
+		if b != null and b.player == u.player:
+			if b.type == "farm" and b.complete:
+				w.cmd_farm(b)
+				return
+			if not b.complete:
+				w.cmd_build(b)
+				return
+	u.cmd_move(at)
+
+
+func set_rally(b: Building, at: Vector2) -> void:
+	var c := map.tile_of(at)
+	b.rally = map.center_of(c) if map.is_resource(c) else at
+	_markers.append([b.rally, 0.0, Color(1, 1, 1)])
+
+
+func on_tech_done(p: Player, id: String) -> void:
+	var t: Dictionary = Defs.TECHS[id]
+	if t.has("gives_age"):
+		p.age = maxi(p.age, t.gives_age)
+		for b in p.buildings:
+			b.queue_redraw()
+		if p == me and not me.is_ai:
+			hud.message("Du har nådd %s!" % Defs.AGES[p.age].to_lower())
+		elif p != me and not me.is_ai:
+			hud.message("Fienden har nådd %s" % Defs.AGES[p.age].to_lower())
 
 
 func on_building_complete(b: Building) -> void:
@@ -197,7 +238,7 @@ func on_building_died(b: Building) -> void:
 		hud.message("%s ble ødelagt!" % b.display_name())
 
 
-func on_damaged(target: Node2D, from: Unit) -> void:
+func on_damaged(target: Node2D, from: Node2D) -> void:
 	if from == null or not is_instance_valid(from):
 		return
 	var victim: Player = target.player
@@ -485,11 +526,16 @@ func _units_on_screen(type: String) -> Array[Unit]:
 
 # ---------------------------------------------------------------- bygging
 
-func open_build_menu(open: bool) -> void:
+func open_build_menu(open: bool, page := 0) -> void:
 	build_menu = open
+	build_page = page
 
 
 func start_placing(type: String) -> void:
+	var why := me.build_block_reason(type)
+	if why != "":
+		hud.message(why)
+		return
 	if not me.can_afford(Defs.BUILDINGS[type].cost):
 		hud.message("Ikke nok ressurser")
 		return
@@ -562,7 +608,16 @@ func tap_world(world: Vector2) -> void:
 		command_at(world)
 		return
 	var b := building_at(world)
-	if b != null:
+	var sb := selected_building
+	if b != null and b != sb:
+		select_building(b)
+	elif sb != null and sb.player == me and sb.complete and sb.trains_anything() and (b == null or b == sb):
+		# Bygning valgt: trykk på kartet setter samlingspunkt (trykk på bygningen fjerner det)
+		if b == sb:
+			sb.rally = Vector2.INF
+		else:
+			set_rally(sb, world)
+	elif b != null:
 		select_building(b)
 	elif u != null:
 		_set_selection([] as Array[Unit])
@@ -596,7 +651,9 @@ func command_at(world: Vector2) -> void:
 			var w := u as Worker
 			if b != null and not b.complete:
 				w.cmd_build(b)
-			elif b != null and b.type == "town":
+			elif b != null and b.type == "farm":
+				w.cmd_farm(b)
+			elif b != null and not b.def.get("drop", []).is_empty():
 				w.cmd_return()
 			elif map.is_resource(c):
 				w.cmd_gather(c)

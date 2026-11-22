@@ -7,13 +7,22 @@ extends Node
 ##  3. tre, mat, gull og stein kommer inn i telleren
 ##  4. folketallet stopper på 5 til det finnes hus
 ##  5. bygge hus via byggemenyen (plasser + bekreft) – folketallet går til 10
-##  6. bygge brakker og trene sverdmann og bueskytter
+##  5b. sagbruk ved skogen: veden leveres der i stedet for i rådhuset
+##  5c. mølle og gård: arbeideren som bygger gården, dyrker den; tom gård forsvinner, og bonden
+##      finner en ny gård selv
+##  5d. samlingspunkt: ny arbeider fra rådhuset går rett til ressursen punktet står på
+##  6. bygge brakker; skytebane, stall, tårn og spydmann er låst i mørketiden
+##  6b. føydaltid i rådhuset (krever to av sagbruk/gruveleir/mølle/brakker), så låses alt opp
+##  6c. trene sverdmann, spydmann, bueskytter, speider og ridder
+##  6d. styrketrekanten: spydmann mot rytter, rytter mot bueskytter, bueskytter mot fotfolk
 ##  7. sverdmannen angriper av seg selv en fiende som kommer nær, bueskytteren skyter på avstand
+##  7b. tårnet skyter fiender innen rekkevidde
 ##  8. soldater river en fiendebygning, og rutene blir gangbare igjen
 ##  9. en soldat som blir angrepet, slår tilbake
 ## 10. seier når fienden har mistet rådhuset og alle enheter
 ##
-## Del B – AI mot AI på normal: begge bygger hus og brakker, trener soldater og angriper.
+## Del B – AI mot AI på normal: begge bygger hus, leveringsplasser og brakker, går opp i
+## føydaltid, bygger skytebane, trener flere typer soldater og angriper.
 ## Skriver også ut hvor fort spillet går (sekunder spilltid per sekund), som mål på ytelsen.
 
 const SPEED := 8.0
@@ -57,6 +66,12 @@ func _wait_until(cond: Callable, game_seconds: float) -> bool:
 		await _wait(0.25)
 		t += 0.25
 	return cond.call()
+
+
+## Gjør en bygning ferdig med en gang (for å spare tid i testen; byggingen er testet i 5)
+func _finish(b: Building) -> void:
+	if b != null and not b.complete:
+		b.build(999.0)
 
 
 func _spot(size: int, near: Vector2i) -> Vector2i:
@@ -177,6 +192,84 @@ func _part_a() -> bool:
 			return false
 	print("5 ok: folk %d/%d" % [me.pop(), me.pop_cap()])
 
+	# 5b
+	var wood_worker := me.units[0] as Worker
+	var forest := map.nearest_adjacent_tile(map.nearest_walkable(tc.cell + Vector2i(1, 3)), GameMap.T.TREE)
+	var lspot := Vector2i(-1, -1)
+	for rr in range(1, 6):
+		for y in range(-rr, rr + 1):
+			for x in range(-rr, rr + 1):
+				if lspot.x < 0 and map.can_place(forest.goal + Vector2i(x, y), 2) and Vector2(x, y).length() > 1.5:
+					lspot = forest.goal + Vector2i(x, y)
+	var lumber := main.place_building(me, "lumber", lspot, [wood_worker])
+	if lumber == null:
+		_fail("sagbruket ble ikke plassert")
+		return false
+	if not await _wait_until(func() -> bool: return lumber.complete, 60.0):
+		_fail("sagbruket ble ikke ferdig")
+		return false
+	wood_worker.cmd_gather(forest.target)
+	if not await _wait_until(func() -> bool: return wood_worker.state == Unit.S.TO_TOWN, 60.0):
+		_fail("vedhoggeren gikk ikke for å levere")
+		return false
+	if wood_worker.target_building != lumber:
+		_fail("veden ble ikke levert på sagbruket, men på %s" % wood_worker.target_building.display_name())
+		return false
+	print("5b ok: leverer ved på sagbruket")
+
+	# 5c
+	var farmer := me.units[1] as Worker
+	var mill := main.place_building(me, "mill", _spot(2, tc.cell + Vector2i(0, -5)), [farmer])
+	_finish(mill)
+	var fspot := _spot(2, mill.cell + Vector2i(0, -3))
+	var farm := main.place_building(me, "farm", fspot, [farmer])
+	if farm == null:
+		_fail("gården ble ikke plassert")
+		return false
+	if map.is_walkable(fspot) == false:
+		_fail("gården skal kunne gås over")
+		return false
+	if not await _wait_until(func() -> bool: return farmer.farm == farm and farmer.state == Unit.S.GATHER, 60.0):
+		_fail("byggeren begynte ikke å dyrke gården")
+		return false
+	var farm2 := main.place_building(me, "farm", _spot(2, mill.cell + Vector2i(4, -3)), [])
+	_finish(farm2)
+	var food0: int = me.res.food
+	if not await _wait_until(func() -> bool: return me.res.food >= food0 + 10, 40.0):
+		_fail("maten fra gården kom ikke hjem")
+		return false
+	farm.food = 2
+	var farm_ref: WeakRef = weakref(farm)
+	if not await _wait_until(func() -> bool: return farm_ref.get_ref() == null, 30.0):
+		_fail("tom gård forsvant ikke")
+		return false
+	if not await _wait_until(func() -> bool: return farmer.farm == farm2, 10.0):
+		_fail("bonden fant ikke den andre gården")
+		return false
+	print("5c ok: gård dyrkes, tom gård forsvinner, bonden finner ny")
+
+	# 5d
+	me.res.food += 200
+	main.select_building(tc)
+	main.tap_world(map.center_of(near.gold))
+	if tc.rally == Vector2.INF:
+		_fail("samlingspunktet ble ikke satt")
+		return false
+	main.clear_selection()
+	var n_before := me.units.size()
+	if not tc.train("worker"):
+		_fail("kunne ikke trene arbeider til samlingspunktet")
+		return false
+	if not await _wait_until(func() -> bool: return me.units.size() > n_before, 20.0):
+		_fail("arbeideren ble ikke ferdig")
+		return false
+	var newbie := me.units[-1] as Worker
+	if newbie.kind != "gold" or not newbie.is_gathering():
+		_fail("ny arbeider gikk ikke til gullet ved samlingspunktet")
+		return false
+	tc.rally = Vector2.INF
+	print("5d ok: samlingspunkt")
+
 	# 6
 	var bspot := _spot(3, tc.cell + Vector2i(4, 0))
 	var bk := main.place_building(me, "barracks", bspot, [me.units[3], me.units[4]])
@@ -186,22 +279,67 @@ func _part_a() -> bool:
 	if not await _wait_until(func() -> bool: return bk.complete, 60.0):
 		_fail("brakkene ble ikke ferdige")
 		return false
-	me.res.food += 200
-	me.res.gold += 300
-	if not bk.train("sword") or not bk.train("archer"):
-		_fail("kunne ikke trene soldater")
+	me.res = {"wood": 3000, "food": 3000, "gold": 3000, "stone": 3000}
+	for t: String in ["range", "stable", "tower"]:
+		if me.build_block_reason(t) == "":
+			_fail("%s skulle vært låst i mørketiden" % t)
+			return false
+	if bk.can_train("spear"):
+		_fail("spydmann skulle vært låst i mørketiden")
 		return false
-	if not await _wait_until(func() -> bool: return me.military().size() == 2, 40.0):
-		_fail("soldatene ble ikke ferdige")
+	print("6 ok: brakker, føydale ting er låst")
+
+	# 6b
+	for h in 4:
+		_finish(main.place_building(me, "house", _spot(2, tc.cell + Vector2i(-8, 6 - h * 3)), []))
+	if not tc.train("feudal"):
+		_fail("kunne ikke starte føydaltid: %s" % me.feudal_block_reason())
+		return false
+	if tc.can_train("worker") or tc.can_train("feudal"):
+		_fail("rådhuset skulle vært opptatt med forskningen")
+		return false
+	if not await _wait_until(func() -> bool: return me.age == 1, 70.0):
+		_fail("føydaltid ble ikke ferdig")
+		return false
+	for t: String in ["range", "stable", "tower"]:
+		if me.build_block_reason(t) != "":
+			_fail("%s er fortsatt låst: %s" % [t, me.build_block_reason(t)])
+			return false
+	print("6b ok: føydaltid")
+
+	# 6c
+	var rg := main.place_building(me, "range", _spot(3, tc.cell + Vector2i(8, 0)), [])
+	var st := main.place_building(me, "stable", _spot(3, tc.cell + Vector2i(8, 6)), [])
+	_finish(rg)
+	_finish(st)
+	var ok_train := bk.train("sword") and bk.train("spear") and rg.train("archer") and st.train("scout") and st.train("knight")
+	if not ok_train:
+		_fail("kunne ikke trene alle soldattypene")
+		return false
+	if not await _wait_until(func() -> bool: return me.military().size() == 5, 60.0):
+		_fail("soldatene ble ikke ferdige (%d)" % me.military().size())
 		return false
 	var sword: Unit = null
 	var archer: Unit = null
 	for u in me.military():
 		if u.type == "sword":
 			sword = u
-		else:
+		elif u.type == "archer":
 			archer = u
-	print("6 ok: brakker og soldater")
+	print("6c ok: alle soldattyper")
+
+	# 6d
+	var D := Defs.UNITS
+	var checks := [
+		["spydmann mot ridder", Defs.damage(D.spear, D.knight), Defs.damage(D.sword, D.knight)],
+		["ridder mot bueskytter", Defs.damage(D.knight, D.archer), Defs.damage(D.knight, D.sword)],
+		["bueskytter mot sverdmann", Defs.damage(D.archer, D.sword), Defs.damage(D.archer, D.knight)],
+	]
+	for c in checks:
+		if c[1] <= c[2]:
+			_fail("styrketrekanten stemmer ikke: %s gir %d, sammenlignet med %d" % c)
+			return false
+	print("6d ok: styrketrekant ", checks)
 
 	# 7
 	var foe_tc := foe.town()
@@ -229,6 +367,19 @@ func _part_a() -> bool:
 		_fail("ingen piler ble skutt")
 		return false
 	print("7 ok: nærkamp og bueskyting")
+
+	# 7b
+	var tspot := _spot(1, tc.cell + Vector2i(-4, -4))
+	var tower := main.place_building(me, "tower", tspot, [])
+	_finish(tower)
+	var tv := main.spawn_unit(foe, "worker", foe_tc)
+	tv.position = map.center_of(map.nearest_walkable(tspot + Vector2i(4, 0)))
+	tv.cmd_stop()
+	var tv_ref: WeakRef = weakref(tv)
+	if not await _wait_until(func() -> bool: return tv_ref.get_ref() == null, 30.0):
+		_fail("tårnet skjøt ikke fienden")
+		return false
+	print("7b ok: tårnet skyter")
 
 	# 8
 	var hspot := _spot(2, map.tile_of(sword.position) + Vector2i(0, 4))
@@ -287,7 +438,7 @@ func _part_b() -> bool:
 	main = get_tree().current_scene as Main
 	_speed(12.0)
 	var start_real := Time.get_ticks_msec()
-	var limit := 20.0 * 60.0
+	var limit := 24.0 * 60.0
 	var next_report := 120.0
 	while main.game_time < limit and not main.game_over:
 		await _wait(1.0)
@@ -301,8 +452,9 @@ func _part_b() -> bool:
 				for a in main.ais:
 					if a.player == p:
 						ai = a
-				line += "  [%s arb %d hær %d hus %d brakker %d bølger %d]" % [Defs.TEAM_NAMES[p.team], p.count_units("worker"), p.military().size(),
-					p.count_buildings("house", false), p.count_buildings("barracks", false), ai.waves_sent]
+				line += "  [%s %s arb %d hær %d hus %d gård %d mil.bygg %d bølger %d]" % [Defs.TEAM_NAMES[p.team], Defs.AGES[p.age], p.count_units("worker"), p.military().size(),
+					p.count_buildings("house", false), p.count_buildings("farm", false),
+					p.count_buildings("barracks", false) + p.count_buildings("range", false) + p.count_buildings("stable", false), ai.waves_sent]
 			var real := (Time.get_ticks_msec() - start_real) / 1000.0
 			print(line, "  (%.1fx)" % (main.game_time / real))
 	var real := (Time.get_ticks_msec() - start_real) / 1000.0
@@ -325,6 +477,23 @@ func _part_b() -> bool:
 	if main.players[0].stats.kills + main.players[1].stats.kills < 5:
 		_fail("nesten ingen kamp")
 		return false
+	for p in main.players:
+		if p.defeated:
+			continue
+		if p.age < 1:
+			_fail("%s nådde ikke føydaltid" % Defs.TEAM_NAMES[p.team])
+			return false
+		for t: String in ["lumber", "mill", "range"]:
+			if p.count_buildings(t) == 0:
+				_fail("%s bygde ikke %s" % [Defs.TEAM_NAMES[p.team], Defs.BUILDINGS[t].name.to_lower()])
+				return false
+		var mil_types := 0
+		for k: String in p.stats.types:
+			if k != "worker":
+				mil_types += 1
+		if mil_types < 2:
+			_fail("%s trente bare %d soldattyper" % [Defs.TEAM_NAMES[p.team], mil_types])
+			return false
 	print("B ok")
 	return true
 
@@ -339,6 +508,6 @@ func _b_ok() -> bool:
 	for a in main.ais:
 		waves += a.waves_sent
 	for p in main.players:
-		if p.stats.built < 3 or p.stats.trained < 15:
+		if p.stats.built < 3 or p.stats.trained < 15 or p.age < 1 or p.count_buildings("range") == 0:
 			return false
 	return waves > 0 and main.players[0].stats.kills + main.players[1].stats.kills >= 5
