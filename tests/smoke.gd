@@ -208,12 +208,9 @@ func _part_a() -> bool:
 	if not await _wait_until(func() -> bool: return lumber.complete, 60.0):
 		_fail("sagbruket ble ikke ferdig")
 		return false
-	wood_worker.cmd_gather(forest.target)
-	if not await _wait_until(func() -> bool: return wood_worker.state == Unit.S.TO_TOWN, 60.0):
-		_fail("vedhoggeren gikk ikke for å levere")
-		return false
-	if wood_worker.target_building != lumber:
-		_fail("veden ble ikke levert på sagbruket, men på %s" % wood_worker.target_building.display_name())
+	wood_worker.cmd_auto_gather("wood")
+	if not await _wait_until(func() -> bool: return lumber.received >= 10, 60.0):
+		_fail("ingen ved ble levert på sagbruket (rådhuset fikk %d)" % tc.received)
 		return false
 	print("5b ok: leverer ved på sagbruket")
 
@@ -232,7 +229,11 @@ func _part_a() -> bool:
 	if not await _wait_until(func() -> bool: return farmer.farm == farm and farmer.state == Unit.S.GATHER, 60.0):
 		_fail("byggeren begynte ikke å dyrke gården")
 		return false
-	var farm2 := main.place_building(me, "farm", _spot(2, mill.cell + Vector2i(4, -3)), [])
+	# Den andre gården legges like ved, så bonden har kort vei (gårder lenger unna enn 14 ruter teller ikke)
+	var farm2 := main.place_building(me, "farm", _spot(2, fspot), [])
+	if farm2 == null or farm2.center().distance_to(farm.center()) > 10.0 * GameMap.TILE:
+		_fail("fant ikke plass til gård nummer to")
+		return false
 	_finish(farm2)
 	var food0: int = me.res.food
 	if not await _wait_until(func() -> bool: return me.res.food >= food0 + 10, 40.0):
@@ -326,6 +327,10 @@ func _part_a() -> bool:
 			sword = u
 		elif u.type == "archer":
 			archer = u
+	# De andre soldatene sendes bort, så de ikke tar fiendene i del 7
+	for u in me.military():
+		if u != sword and u != archer:
+			u.cmd_move(map.center_of(map.nearest_walkable(tc.cell + Vector2i(-12, -10))))
 	print("6c ok: alle soldattyper")
 
 	# 6d
@@ -355,16 +360,14 @@ func _part_a() -> bool:
 	target.position = map.center_of(map.nearest_walkable(archer.cell() + Vector2i(0, -4)))
 	target.cmd_stop()
 	var target_ref: WeakRef = weakref(target)
+	sword.cmd_move(map.center_of(map.nearest_walkable(tc.cell + Vector2i(-12, -10))))
 	archer.cmd_attack_unit(target)
-	var arrows_seen := [false]
-	if not await _wait_until(func() -> bool:
-		if not main._arrows.is_empty():
-			arrows_seen[0] = true
-		return target_ref.get_ref() == null, 30.0):
+	var arrows0 := main.arrows_fired
+	if not await _wait_until(func() -> bool: return target_ref.get_ref() == null, 30.0):
 		_fail("bueskytteren drepte ikke målet")
 		return false
-	if not arrows_seen[0]:
-		_fail("ingen piler ble skutt")
+	if main.arrows_fired - arrows0 < 3:
+		_fail("bueskytteren skjøt bare %d piler" % (main.arrows_fired - arrows0))
 		return false
 	print("7 ok: nærkamp og bueskyting")
 
@@ -382,6 +385,8 @@ func _part_a() -> bool:
 	print("7b ok: tårnet skyter")
 
 	# 8
+	sword.position = archer.position + Vector2(0, 12)
+	sword.cmd_stop()
 	var hspot := _spot(2, map.tile_of(sword.position) + Vector2i(0, 4))
 	var fh := main._add_building(foe, "house", hspot, true)
 	var fh_ref: WeakRef = weakref(fh)

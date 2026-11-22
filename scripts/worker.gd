@@ -228,6 +228,7 @@ func _worker_state(delta: float) -> void:
 					if carry > 0:
 						player.res[carry_kind] += carry
 						player.stats.gathered += carry
+						t.received += carry
 						carry = 0
 					target_building = null
 					if _target_ok():

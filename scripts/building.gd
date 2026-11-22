@@ -24,6 +24,8 @@ var rally := Vector2.INF
 ## Gården: mat igjen og arbeideren som jobber der
 var food := 0
 var farmer: Node2D = null
+## Hvor mye som er levert her (leveringsplasser)
+var received := 0
 
 var _flash := 0.0
 var _redraw_t := 0.0

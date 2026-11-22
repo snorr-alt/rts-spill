@@ -250,8 +250,12 @@ func on_damaged(target: Node2D, from: Node2D) -> void:
 		hud.alert("Du blir angrepet!", target.position)
 
 
+var arrows_fired := 0
+
+
 func add_arrow(from: Vector2, to: Vector2) -> void:
 	_arrows.append([from, to, 0.0])
+	arrows_fired += 1
 
 
 # ---------------------------------------------------------------- oppslag
