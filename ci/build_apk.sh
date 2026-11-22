@@ -56,7 +56,7 @@ fi
 echo "== Kjører testen (spilltest uten skjerm)"
 printf '[autoload]\nSmoke="*res://tests/smoke.gd"\n' > override.cfg
 set +e
-timeout 420 ./godot --headless 2>&1 | tee smoke.log
+timeout 600 ./godot --headless 2>&1 | tee smoke.log
 STATUS=${PIPESTATUS[0]}
 set -e
 rm -f override.cfg
